@@ -1,0 +1,158 @@
+sources:
+  # Tier A: 通用搜索引擎（全部通过 Edge MCP 浏览器搜索）
+  - name: google
+    type: edge_mcp
+    priority: 1
+    categories: [general, tech, ai, investment, policy]
+    search_template: "https://www.google.com/search?q={query}&hl=zh-CN"
+
+  - name: bing
+    type: edge_mcp
+    priority: 2
+    categories: [general]
+    search_template: "https://www.bing.com/search?q={query}&setlang=zh-CN"
+
+  - name: yandex
+    type: edge_mcp
+    priority: 3
+    categories: [general, tech]
+    search_template: "https://yandex.com/search/?text={query}&lr=134"
+
+  - name: github
+    type: api
+    priority: 1
+    categories: [ai, tech]
+
+  # Tier B: 中文社区（需要登录的走 Edge MCP）
+  - name: zhihu
+    type: edge_mcp
+    priority: 2
+    categories: [general, tech, ai]
+    requires_login: true
+    login_url: "https://www.zhihu.com/login"
+    login_check_selector: ".Topnav-profileImage"
+    search_template: "https://www.zhihu.com/search?type=content&q={query}"
+
+  - name: xueqiu
+    type: edge_mcp
+    priority: 1
+    categories: [investment]
+    requires_login: true
+    login_url: "https://xueqiu.com/login"
+    login_check_selector: ".doc-userinfo"
+    search_template: "https://xueqiu.com/search?q={query}"
+
+  - name: v2ex
+    type: edge_mcp
+    priority: 2
+    categories: [tech, ai]
+    search_template: "https://www.sov2ex.com/?q={query}"
+
+  - name: sogou_wechat
+    type: api
+    priority: 3
+    categories: [general, tech, chinese]
+
+  # Tier C: 财经门户 + 专业报告
+  - name: eastmoney
+    type: edge_mcp
+    priority: 1
+    categories: [investment, policy, general]
+    search_template: "https://so.eastmoney.com/web/s?keyword={query}"
+
+  - name: trendforce
+    type: edge_mcp
+    priority: 1
+    categories: [investment]
+    navigate_url: "https://www.trendforce.com"
+    extraction_rules: trendforce_price
+
+  # Tier D: 社交媒体
+  - name: twitter
+    type: edge_mcp
+    priority: 2
+    categories: [ai, investment, tech]
+    requires_login: true
+    login_url: "https://x.com/login"
+    login_check_selector: "[data-testid=\"AppTabBar\"]"
+    search_template: "https://x.com/search?q={query}&f=live"
+
+  # Tier E: 官方渠道
+  - name: stats_gov
+    type: edge_mcp
+    priority: 1
+    categories: [policy]
+    search_template: "http://www.stats.gov.cn/sj/zxfb/search?keyword={query}"
+
+  # Tier F: Direct API sources (no browser needed)
+  - name: reddit
+    type: api
+    priority: 1
+    categories: [general, tech, ai, investment]
+
+  - name: hacker_news
+    type: api
+    priority: 2
+    categories: [tech, ai, general]
+
+  - name: github_trending
+    type: api
+    priority: 2
+    categories: [tech, ai]
+
+  - name: rsshub
+    type: api
+    priority: 2
+    categories: [general, tech, ai, chinese]
+
+  - name: yahoo_finance
+    type: api
+    priority: 1
+    categories: [investment, general]
+
+  - name: coingecko
+    type: api
+    priority: 1
+    categories: [investment]
+
+  - name: binance
+    type: api
+    priority: 2
+    categories: [investment]
+
+  - name: fear_greed
+    type: api
+    priority: 3
+    categories: [investment]
+
+  - name: world_bank
+    type: api
+    priority: 2
+    categories: [policy, investment]
+
+  - name: sec_edgar
+    type: api
+    priority: 1
+    categories: [investment, policy]
+
+  - name: cninfo
+    type: api
+    priority: 1
+    categories: [investment, policy, chinese]
+
+  - name: sina_finance
+    type: api
+    priority: 1
+    categories: [investment, chinese]
+
+  # Video sources (tech tutorials, project demos, architecture walkthroughs)
+  - name: youtube
+    type: api
+    priority: 2
+    categories: [tech, ai, general]
+
+  - name: bilibili
+    type: edge_mcp
+    priority: 2
+    categories: [tech, ai, chinese]
+    search_template: "https://search.bilibili.com/video?keyword={query}&order=totalrank"

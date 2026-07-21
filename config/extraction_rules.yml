@@ -1,0 +1,35 @@
+# Extraction rules for structured data
+extraction_rules:
+  trendforce_price:
+    type: regex
+    patterns:
+      - name: memory_price
+        regex: '(DRAM|DDR4|DDR5|LPDDR4|LPDDR5|NAND|NOR|HBM|HBM3|HBM3E|HBM4)[^0-9]*([0-9]+\\.?[0-9]*)\\s*(USD|美元|元)?/?(GB|G|MB|片)?'
+        fields: [product, price, currency, unit]
+      - name: price_change
+        regex: '(上涨|下跌|增长|下降|上调|下调)\\s*([0-9]+\\.?[0-9]*)\\s*-\\s*([0-9]+\\.?[0-9]*)\\s*%'
+        fields: [direction, low_pct, high_pct]
+      - name: capacity
+        regex: '(产能|capacity|utilization)[^0-9]*([0-9]+\\.?[0-9]*)\\s*%'
+        fields: [metric, value]
+
+  xueqiu_investment:
+    type: llm
+    prompt: |
+      从以下文本中提取投资相关的关键数据：
+      - 公司名称
+      - 价格/估值数据
+      - 百分比变化
+      - 日期/时间段
+      - 关键事件
+      输出 JSON 格式。
+
+  zhihu_tech:
+    type: llm
+    prompt: |
+      从以下技术讨论中提取关键信息：
+      - 技术主题
+      - 关键观点
+      - 数据/数字引用
+      - 作者/来源
+      输出 JSON 格式。

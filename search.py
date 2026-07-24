@@ -38,7 +38,7 @@ def _sanitize(obj):
 
 async def run_search(query: str, sources: list[str] | None = None,
                      max_results: int = 20, all_sources: bool = False,
-                     include_structured: bool = True, raw: bool = False,
+                     include_structured: bool = True, raw: bool = True,
                      freshness: str | None = None):
     """Run the search pipeline and return results dict."""
     from app.storage.sqlite_store import init_db
@@ -138,7 +138,11 @@ def main():
     parser.add_argument("--max", type=int, default=30, help="Max results (default: 30)")
     parser.add_argument("--all", action="store_true", help="Search all sources")
     parser.add_argument("--json", action="store_true", help="Output raw JSON")
-    parser.add_argument("--raw", action="store_true", help="Skip LLM judge (faster, no relevance scoring)")
+    parser.add_argument("--raw", action="store_true",
+                        help="Skip LLM judge (DEFAULT since 2026-07; kept for backward compat)")
+    parser.add_argument("--judge", dest="raw", action="store_false",
+                        help="Enable LLM judge re-ranking (adds 25-74s; useful for single ad-hoc searches)")
+    parser.set_defaults(raw=True)
     parser.add_argument("--freshness", help="Only keep results newer than this window (e.g. 7d, 30d, 24h, or days as a number)")
     args = parser.parse_args()
 

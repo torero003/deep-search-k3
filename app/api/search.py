@@ -333,7 +333,9 @@ class SearchRequest(BaseModel):
     all_sources: bool = False
     max_results: int = Field(default=30, ge=1, le=100)
     include_structured: bool = True
-    raw: bool = False
+    # LLM judge 默认关闭（2026-07 起）：批量场景 judge 每次 25-74s 且与下游
+    # subagent 精读重复，RRF 排序直接够用。需要时显式 raw=False 开启。
+    raw: bool = True
     freshness: Optional[str] = None
     language: str = "zh"
 
@@ -437,12 +439,15 @@ async def search(req: SearchRequest):
             if before != len(source_names):
                 logger.info(f"category={category}: excluded {before - len(source_names)} sources: {[s for s in source_names if s in excluded]}")
 
-    # Always include V2EX, YouTube, Bilibili as general knowledge sources
-    for s in _ALWAYS_ON_SOURCES:
-        if s not in source_names and SOURCES.get(s):
-            source_names.append(s)
-    if _ALWAYS_ON_SOURCES & set(source_names[-len(_ALWAYS_ON_SOURCES):]):
-        logger.info(f"always-on sources added: {_ALWAYS_ON_SOURCES}")
+    # Always include V2EX as a general knowledge source
+    # (only for auto-selected sources — an explicit --sources list is honored as-is;
+    #  youtube/bilibili enter via INTENT_MAP for tech/ai domains, not here)
+    if not req.sources:
+        for s in _ALWAYS_ON_SOURCES:
+            if s not in source_names and SOURCES.get(s):
+                source_names.append(s)
+        if _ALWAYS_ON_SOURCES & set(source_names[-len(_ALWAYS_ON_SOURCES):]):
+            logger.info(f"always-on sources added: {_ALWAYS_ON_SOURCES}")
 
     # Filter to valid sources
     valid_sources = [s for s in source_names if SOURCES.get(s)]

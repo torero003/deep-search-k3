@@ -109,7 +109,6 @@ LOGIN_SITES = {
     "zhihu": "zhihu.com",
     "xueqiu": "xueqiu.com",
     "twitter": "x.com",
-    "eastmoney": "eastmoney.com",
 }
 
 # Sources needing dedicated tabs for isolation (tabs ARE closed after search)
@@ -131,7 +130,6 @@ SITE_HOME_URLS = {
     "zhihu": "https://www.zhihu.com",
     "xueqiu": "https://xueqiu.com",
     "twitter": "https://x.com",
-    "eastmoney": "https://www.eastmoney.com",
     "google": "https://www.google.com",
     "bing": "https://www.bing.com",
     "github": "https://github.com",
@@ -272,9 +270,17 @@ async def _create_new_tab(url: str = "about:blank", cdp: CDPConnection = None) -
     Returns tab info dict with webSocketDebuggerUrl, or None on failure.
     """
     try:
-        # Try /json/new first (works on Chrome, not on some Edge configs)
+        # /json/new requires PUT since Chromium 111 (GET returns 405)
         async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get("http://127.0.0.1:9222/json/new")
+            resp = await client.put(f"http://127.0.0.1:9222/json/new?{url}")
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception:
+        pass
+    try:
+        # Legacy GET fallback for older browsers
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"http://127.0.0.1:9222/json/new?{url}")
             if resp.status_code == 200:
                 return resp.json()
     except Exception:
@@ -390,60 +396,83 @@ async def _find_debuggable_tab(source_name: str = None):
     return tabs[0] if tabs else None
 
 
+# Per-source locks serializing access to shared login-site tabs.
+# Only needed on the fallback path (when temp-tab creation fails);
+# the primary path gives every search its own temp tab.
+_source_tab_locks: dict[str, asyncio.Lock] = {}
+
+
+def _get_source_tab_lock(source_name: str) -> asyncio.Lock:
+    lock = _source_tab_locks.get(source_name)
+    if lock is None:
+        lock = asyncio.Lock()
+        _source_tab_locks[source_name] = lock
+    return lock
+
+
 async def create_parallel_connection(source_name: str = None):
     """Create an independent CDP connection for parallel search.
 
-    - Login sources: reuse existing logged-in tab, NEVER close after search
+    - Login sources: fresh temp tab, closed after search. Login state lives in
+      profile-wide cookies (zhihu z_c0, xueqiu xq_a_token), so a new tab is
+      equally authenticated — the user's own tab is never touched. This
+      eliminates parallel races on the shared tab (the root cause of flaky
+      zhihu/xueqiu searches) and browsing hijack. Falls back to the shared
+      site tab (serialized per-source) only when temp-tab creation fails.
     - Dedicated sources: use dedicated tab, close after search
     - Other sources: try to create new tab, close if created
-    Returns (cdp, handler_task, tab_id, should_close_tab, original_url)
+    Returns (cdp, handler_task, tab_id, should_close_tab, original_url, tab_lock)
     """
     await _refresh_site_tabs()
-    tab = await _find_debuggable_tab(source_name=source_name)
-    if not tab:
-        raise Exception("No browser tabs found on port 9222")
 
     is_login = source_name in LOGIN_SITES
     is_dedicated = source_name in DEDICATED_SITES
+    tab = None
     original_url = None
-    should_close = False  # whether to close the tab when done
+    should_close = False
+    tab_lock = None
 
     if is_login:
-        # Login sites: reuse tab, never close
-        original_url = tab.get("url")
-        should_close = False
-    elif is_dedicated:
-        # Dedicated sites: close after search to prevent tab accumulation
-        should_close = True
+        tab = await _create_new_tab("about:blank")
+        if tab:
+            should_close = True
+            logger.info(f"CDP parallel: {source_name} using temp tab {tab.get('id')} (user tab untouched)")
+        else:
+            logger.warning(f"{source_name}: temp tab creation failed, falling back to shared site tab (serialized)")
+            tab = await _find_debuggable_tab(source_name=source_name)
+            tab_lock = _get_source_tab_lock(source_name)
+            await tab_lock.acquire()
+            original_url = tab.get("url") if tab else None
     else:
-        # Other sources: try to create a fresh tab
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                resp = await client.get("http://127.0.0.1:9222/json/new")
-                if resp.status_code == 200:
-                    tab = resp.json()
-                    should_close = True
-                    logger.info(f"CDP parallel: created new tab {tab.get('id')}")
-        except Exception as e:
-            logger.warning(f"CDP: failed to create new tab: {e}")
-        # If /json/new failed, try Target.createTarget via CDP as fallback
-        if not should_close:
-            try:
-                new_tab = await _create_new_tab("about:blank")
-                if new_tab:
-                    tab = new_tab
-                    should_close = True
-                    logger.info(f"CDP parallel: created new tab via Target.createTarget {tab.get('id')}")
-            except Exception as e2:
-                logger.warning(f"CDP: Target.createTarget also failed: {e2}")
-        # If both fail, reuse the neutral tab from _find_debuggable_tab (don't close)
+        tab = await _find_debuggable_tab(source_name=source_name)
+        if is_dedicated:
+            # Dedicated sites: close after search to prevent tab accumulation
+            should_close = True
+        else:
+            # Other sources: try to create a fresh tab
+            new_tab = await _create_new_tab("about:blank")
+            if new_tab:
+                tab = new_tab
+                should_close = True
+                logger.info(f"CDP parallel: created new tab {tab.get('id')}")
+            # If creation failed, reuse the neutral tab from _find_debuggable_tab (don't close)
+
+    if not tab:
+        if tab_lock is not None:
+            tab_lock.release()
+        raise Exception("No browser tabs found on port 9222")
 
     ws_url = tab.get("webSocketDebuggerUrl") or f"{CDP_HOST}/devtools/page/{tab['id']}"
     cdp = CDPConnection(ws_url)
-    await cdp.connect()
+    try:
+        await cdp.connect()
+    except Exception:
+        if tab_lock is not None:
+            tab_lock.release()
+        raise
     handler_task = asyncio.ensure_future(cdp.handler())
-    logger.info(f"CDP parallel: connected to tab {tab.get('id')} (close={should_close}, login={is_login}, dedicated={is_dedicated})")
-    return (cdp, handler_task, tab.get("id"), should_close, original_url)
+    logger.info(f"CDP parallel: connected to tab {tab.get('id')} (close={should_close}, login={is_login}, dedicated={is_dedicated}, locked={tab_lock is not None})")
+    return (cdp, handler_task, tab.get("id"), should_close, original_url, tab_lock)
 
 
 async def close_parallel_connection(conn_info):
@@ -452,7 +481,8 @@ async def close_parallel_connection(conn_info):
     IMPORTANT: Do NOT use _get_cdp() singleton here — it holds a global lock
     that conflicts with other parallel connections still in flight.
     """
-    cdp, handler_task, tab_id, should_close, original_url = conn_info
+    cdp, handler_task, tab_id, should_close, original_url, *extra = conn_info
+    tab_lock = extra[0] if extra else None
     handler_task.cancel()
     try:
         await cdp.close()
@@ -465,11 +495,13 @@ async def close_parallel_connection(conn_info):
             logger.info(f"CDP parallel: closed tab {tab_id}")
         except Exception:
             pass
-    # Login sources: just leave the tab as-is (user has locked tabs).
+    # Shared-tab fallback: just leave the tab as-is (user has locked tabs).
     # Do NOT try to restore original_url via _get_cdp() — it races with
     # other parallel connections on the singleton lock.
     if not should_close and original_url:
         logger.debug(f"CDP parallel: leaving login tab {tab_id} at current URL (user-managed)")
+    if tab_lock is not None:
+        tab_lock.release()
 
 
 async def navigate(url: str, wait: float = 3.0, source_name: str = None, cdp: CDPConnection = None) -> dict:
@@ -1533,7 +1565,7 @@ async def cleanup_unused_tabs():
     """Close all non-essential tabs after search completes.
 
     Keeps:
-    - Login site tabs (zhihu, xueqiu, twitter, eastmoney) — needed for auth
+    - Login site tabs (zhihu, xueqiu, twitter) — needed for auth
     - 1 neutral tab — to prevent Edge from closing
 
     Closes everything else (dedicated sites, random pages, about:blank).

@@ -127,25 +127,34 @@ _FINANCE_ONLY_SOURCES = {
 }
 
 # Sources purely for tech (skip when domain is investment)
-# Note: v2ex, youtube, bilibili are NOT here — they are always-on general sources
+# Note: v2ex is NOT here — it is an always-on general source
 _TECH_ONLY_SOURCES = {
     "hacker_news", "github_trending",
 }
 
-# Sources always included regardless of domain (community + video knowledge)
-_ALWAYS_ON_SOURCES = {"v2ex", "youtube", "bilibili"}
+# Sources always included regardless of domain — currently none
+_ALWAYS_ON_SOURCES = set()
+
+# Video sources are heavy (yt-dlp subprocess, SPA rendering, transcript
+# enrichment) — only worth the 40-70s cost for tech/ai queries
+_VIDEO_SOURCES = {"youtube", "bilibili"}
+_VIDEO_DOMAINS = {"tech", "ai"}
 
 
 def get_excluded_sources_for_domain(domain: str) -> set[str]:
     """Return source names to exclude based on detected domain intent.
 
     Prevents searching finance sources for tech questions and vice versa.
+    Video sources (youtube/bilibili) only run for tech/ai domains.
     """
+    excluded = set()
     if domain in ("tech", "ai"):
-        return _FINANCE_ONLY_SOURCES
+        excluded |= _FINANCE_ONLY_SOURCES
     elif domain == "investment":
-        return _TECH_ONLY_SOURCES
-    return set()
+        excluded |= _TECH_ONLY_SOURCES
+    if domain not in _VIDEO_DOMAINS:
+        excluded |= _VIDEO_SOURCES
+    return excluded
 
 # ---------------------------------------------------------------------------
 # Source capabilities — each source tagged with its strengths

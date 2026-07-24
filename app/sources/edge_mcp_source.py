@@ -173,7 +173,6 @@ SEARCH_TEMPLATES = {
     "xueqiu":      "https://xueqiu.com/k?q={query}",
     "twitter":     "https://x.com/search?q={query}&f=live",
     "trendforce":  "https://www.trendforce.com/tech/search?q={query}",
-    "eastmoney":   "https://so.eastmoney.com/web/s?keyword={query}",
     "v2ex":        "https://www.sov2ex.com/?q={query}",
     "stats_gov":   "https://www.stats.gov.cn/search/s?siteCode=bm36000002&tab=&qt={query}",
     "youtube":     "https://www.youtube.com/results?search_query={query}",
@@ -213,7 +212,7 @@ LOGIN_CHECKS = {
 }
 
 
-SOURCES_USE_SEARCH_URL = {"google", "bing", "yandex", "github", "zhihu", "xueqiu", "twitter", "v2ex", "stats_gov", "trendforce", "eastmoney", "youtube", "bilibili"}
+SOURCES_USE_SEARCH_URL = {"google", "bing", "yandex", "github", "zhihu", "xueqiu", "twitter", "v2ex", "stats_gov", "trendforce", "youtube", "bilibili"}
 
 
 class EdgeMCPSource(BaseSource):
@@ -413,23 +412,34 @@ class EdgeMCPSource(BaseSource):
         LOGIN_STATE.pop(self.name, None)
 
     async def _attempt_login_recovery(self) -> bool:
-        """Try to recover login by navigating to the site homepage and rechecking.
+        """Try to recover login by visiting the site homepage in a temp tab
+        (may refresh session cookies) and rechecking.
         Returns True if login is detected after recovery, False otherwise."""
+        conn = None
         try:
-            from app.sources.cdp_client import navigate, LOGIN_URLS
+            from app.sources import cdp_client
             home_url = LOGIN_CHECKS.get(self.name, {}).get("url", "")
             if home_url:
-                await navigate(home_url, wait=3.0, source_name=self.name)
+                conn = await cdp_client.create_parallel_connection(self.name)
+                await cdp_client.navigate(home_url, wait=3.0, cdp=conn[0])
             logged_in = await self.check_login(self.name)
             return logged_in is True
         except Exception as e:
             logger.error(f"{self.name}: login recovery error: {e}")
             return False
+        finally:
+            if conn is not None:
+                from app.sources import cdp_client
+                try:
+                    await cdp_client.close_parallel_connection(conn)
+                except Exception:
+                    pass
 
     @staticmethod
     async def check_login(source_name: str) -> bool | None:
         """Check if a source is logged in. Returns True/False/None(unknown).
-        Uses the already-logged-in tab for that site (not a neutral tab)."""
+        Uses a fresh temp tab (login state is profile-wide via cookies), so
+        the user's own tab is never navigated."""
         now = time.time()
         cached = LOGIN_STATE.get(source_name)
         if cached and now - cached["checked_at"] < LOGIN_CHECK_TTL:
@@ -439,9 +449,11 @@ class EdgeMCPSource(BaseSource):
         if not check:
             return True  # no login check defined, assume OK
 
+        conn = None
         try:
-            from app.sources.cdp_client import navigate, get_content
-            page = await navigate(check["url"], wait=3.0, source_name=source_name)
+            from app.sources import cdp_client
+            conn = await cdp_client.create_parallel_connection(source_name)
+            page = await cdp_client.navigate(check["url"], wait=3.0, cdp=conn[0])
             content = f"{page.get('title', '')}\n\n{page.get('text', '')}"
 
             logged_in_texts = check.get("logged_in_text", [])
@@ -456,12 +468,18 @@ class EdgeMCPSource(BaseSource):
                 status = False
             else:
                 status = None
-
-            LOGIN_STATE[source_name] = {"logged_in": status, "checked_at": now}
-            return status
         except Exception:
-            LOGIN_STATE[source_name] = {"logged_in": None, "checked_at": now}
-            return None
+            status = None
+        finally:
+            if conn is not None:
+                from app.sources import cdp_client
+                try:
+                    await cdp_client.close_parallel_connection(conn)
+                except Exception:
+                    pass
+
+        LOGIN_STATE[source_name] = {"logged_in": status, "checked_at": now}
+        return status
 
     def health_check(self) -> dict:
         return {"available": True, "message": "Edge MCP source ready"}

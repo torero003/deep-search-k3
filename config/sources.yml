@@ -25,22 +25,15 @@ sources:
 
   # Tier B: 中文社区（需要登录的走 Edge MCP）
   - name: zhihu
-    type: edge_mcp
+    type: api
     priority: 2
     categories: [general, tech, ai]
-    requires_login: true
-    login_url: "https://www.zhihu.com/login"
-    login_check_selector: ".Topnav-profileImage"
-    search_template: "https://www.zhihu.com/search?type=content&q={query}"
 
   - name: xueqiu
     type: edge_mcp
     priority: 1
     categories: [investment]
-    requires_login: true
-    login_url: "https://xueqiu.com/login"
-    login_check_selector: ".doc-userinfo"
-    search_template: "https://xueqiu.com/search?q={query}"
+    search_template: "https://xueqiu.com/k?q={query}"
 
   - name: v2ex
     type: edge_mcp
@@ -55,10 +48,9 @@ sources:
 
   # Tier C: 财经门户 + 专业报告
   - name: eastmoney
-    type: edge_mcp
+    type: api
     priority: 1
     categories: [investment, policy, general]
-    search_template: "https://so.eastmoney.com/web/s?keyword={query}"
 
   - name: trendforce
     type: edge_mcp

@@ -181,7 +181,7 @@ async def _search_one_parallel(source_name: str, query: str, community_kw: str |
 
     # Route based on source type
     source_type = SOURCES.get(source_name, {}).get("type", "edge_mcp")
-    logger.error(f"DEBUG _search_one_parallel({source_name}): source_type={source_type} SOURCES_entry={SOURCES.get(source_name, {})}")
+    logger.debug(f"DEBUG _search_one_parallel({source_name}): source_type={source_type} SOURCES_entry={SOURCES.get(source_name, {})}")
 
     if source_type == "api":
         # Direct API call, no CDP needed

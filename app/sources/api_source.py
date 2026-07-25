@@ -1070,6 +1070,381 @@ class SinaFinanceSource(BaseSource):
 
 
 # ---------------------------------------------------------------------------
+# Zhihu (知乎) — direct HTTP API via cookie auth
+# Uses CookieManager to extract/login once, then bypasses CDP entirely.
+# API endpoint: /api/v4/search_v3 returns structured JSON, no JS rendering needed.
+# ---------------------------------------------------------------------------
+
+from app.sources.cookie_manager import (
+    get_cookies, build_cookie_header, clear_cookies,
+    wait_for_rate_limit, reset_rate_limit,
+)
+
+_ZHIHU_COOKIE_DOMAIN = "zhihu.com"
+_ZHIHU_API_BASE = "https://api.zhihu.com"
+
+
+async def search_zhihu_api(query: str, max_results: int = 10) -> list[SearchResult]:
+    """Search Zhihu via direct HTTP API.
+
+    Cookies are obtained once from the user's logged-in CDP tab and persisted.
+    Subsequent searches use cached cookies — no browser needed.
+    Falls back gracefully on cookie expiry.
+    """
+    results = []
+    cookie_dict = await get_cookies(_ZHIHU_COOKIE_DOMAIN)
+    if not cookie_dict:
+        logger.warning("zhihu_api: no cookies available")
+        return results
+
+    cookie_str = build_cookie_header(_ZHIHU_COOKIE_DOMAIN, cookie_dict)
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+        "Cookie": cookie_str,
+        "x-zse-93": "101_4_1.0",
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://www.zhihu.com/search",
+    }
+
+    try:
+        from urllib.parse import quote
+        encoded_q = quote(query)
+
+        # Rate limit: zhihu blocks fast requests even with valid cookies
+        await wait_for_rate_limit(_ZHIHU_COOKIE_DOMAIN)
+
+        async with _make_client(timeout=15.0) as client:
+            resp = await client.get(
+                f"{_ZHIHU_API_BASE}/search_v3?q={encoded_q}&t=general&page=1&limit={min(max_results + 5, 20)}",
+                headers=headers,
+            )
+
+        if resp.status_code != 200:
+            if resp.status_code in (401, 403):
+                logger.warning("zhihu_api: cookie expired, clearing for re-login")
+                clear_cookies(_ZHIHU_COOKIE_DOMAIN)
+            else:
+                logger.warning(f"zhihu_api: HTTP {resp.status_code}")
+            return results
+
+        data = resp.json()
+        items = data.get("data", [])
+
+        for item in items:
+            obj = item.get("object", {})
+            obj_type = obj.get("type", "")
+
+            # Extract title and content based on result type
+            title = ""
+            content = ""
+            url = ""
+            published_date = ""
+
+            if obj_type == "hot_timing":
+                desc = obj.get("description", {})
+                inner = desc.get("object", {}) if isinstance(desc, dict) else {}
+                title = inner.get("title", "") or obj.get("title", "")
+                content = inner.get("description", "")[:300]
+                url = inner.get("url", "")
+                # Use follower_count as engagement
+                engagement = {"upvotes": inner.get("follower_count", 0)}
+            elif obj_type == "article":
+                title = obj.get("title", "")
+                content = obj.get("excerpt", "")[:300] or obj.get("content", "")[:300]
+                url = obj.get("url", "")
+                engagement = {"upvotes": obj.get("voteup_count", 0), "comments": obj.get("comment_count", 0)}
+            elif obj_type == "answer":
+                title = obj.get("excerpt", "")[:80]
+                content = obj.get("content", "")[:300]
+                url = obj.get("url", "")
+                engagement = {"upvotes": obj.get("voteup_count", 0), "comments": obj.get("comment_count", 0)}
+            elif obj_type == "question":
+                title = obj.get("title", "")
+                content = obj.get("description", "")[:300]
+                url = obj.get("url", "")
+                engagement = {"upvotes": obj.get("follower_count", 0)}
+
+            if not title or not url:
+                continue
+
+            results.append(SearchResult(
+                title=str(title)[:120],
+                url=str(url),
+                content=str(content)[:400],
+                source="zhihu",
+                published_date=published_date,
+                engagement=engagement or None,
+            ))
+
+            if len(results) >= max_results:
+                break
+
+        logger.info(f"zhihu_api: {len(results)} results for '{query}'")
+    except Exception as e:
+        logger.error(f"zhihu_api search error: {e}")
+
+    return results
+
+
+class ZhihuAPISource(BaseSource):
+    async def search(self, query: str, max_results: int = 10) -> list[SearchResult]:
+        return await search_zhihu_api(query, max_results)
+
+    def health_check(self) -> dict:
+        return {"available": True, "message": "知乎 API direct ready (cookie auth)"}
+
+
+# ---------------------------------------------------------------------------
+# Xueqiu (雪球) — direct HTTP API via cookie auth
+# Same pattern as zhihu: extract cookies once from CDP login tab, persist, reuse.
+#
+# Endpoint history:
+#   /v5/search.json            -> 404 (offline)
+#   /query/v5/search.json      -> 404 (offline)
+#   /query/v1/search/status.json (used by the /k web search page) requires the
+#                               md5__1038 JS signature and is Aliyun-WAF
+#                               challenged for non-browser clients.
+#   /query/v1/search/web/stock.json -> WORKS unsigned with login cookies.
+# Returns matching stocks (code/name/exchange/quote/industry); the first item
+# may carry an AI-generated summary in ai_result.
+# ---------------------------------------------------------------------------
+
+
+_XUEQIU_COOKIE_DOMAIN = "xueqiu.com"
+
+
+async def search_xueqiu_api(query: str, max_results: int = 10) -> list[SearchResult]:
+    """Search Xueqiu via direct HTTP API.
+
+    Cookies are obtained once from the user's logged-in CDP tab and persisted.
+    Subsequent searches use cached cookies — no browser needed.
+    Falls back gracefully on cookie expiry.
+    """
+    results = []
+    cookie_dict = await get_cookies(_XUEQIU_COOKIE_DOMAIN)
+    if not cookie_dict:
+        logger.warning("xueqiu_api: no cookies available")
+        return results
+
+    cookie_str = build_cookie_header(_XUEQIU_COOKIE_DOMAIN, cookie_dict)
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                       "(KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+        "Cookie": cookie_str,
+        "Accept": "application/json, text/plain, */*",
+        "Referer": "https://xueqiu.com/k",
+    }
+
+    try:
+        from urllib.parse import quote
+        encoded_q = quote(query)
+
+        # Rate limit: xueqiu is very sensitive — min 4s between requests
+        await wait_for_rate_limit(_XUEQIU_COOKIE_DOMAIN)
+
+        async with _make_client(timeout=15.0) as client:
+            resp = await client.get(
+                f"https://xueqiu.com/query/v1/search/web/stock.json?q={encoded_q}"
+                f"&size={min(max_results + 5, 20)}&page=1",
+                headers=headers,
+            )
+
+        if resp.status_code != 200:
+            if resp.status_code in (401, 403):
+                logger.warning("xueqiu_api: cookie expired, clearing for re-login")
+                clear_cookies(_XUEQIU_COOKIE_DOMAIN)
+            else:
+                logger.warning(f"xueqiu_api: HTTP {resp.status_code}")
+            return results
+
+        data = resp.json()
+
+        # Xueqiu 40001 = rate limited, cool down and reset counters
+        error_code = data.get("error_code") or (data.get("error", {}).get("code") if isinstance(data.get("error"), dict) else None)
+        if error_code == "40001":
+            logger.warning("xueqiu_api: 40001 rate limited, cooling down 30s...")
+            await asyncio.sleep(30)
+            reset_rate_limit(_XUEQIU_COOKIE_DOMAIN)
+            return results
+        items = data.get("list", []) or []
+
+        seen_symbols: set[str] = set()
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+
+            name = item.get("name", "") or ""
+            code = item.get("code", "") or ""
+            exchange = item.get("exchange", "") or ""
+            if not name or not code:
+                continue
+
+            # code may already be a full symbol (SH688981) or a bare numeric
+            # code needing the exchange prefix (HK + 00981)
+            symbol = code if code[:1].isalpha() else f"{exchange}{code}"
+            if symbol in seen_symbols:
+                continue
+            seen_symbols.add(symbol)
+            url = f"https://xueqiu.com/S/{symbol}"
+            title = f"{name}({symbol})"
+
+            # First item often carries an AI-generated summary — most useful text
+            content = ""
+            ai_result = item.get("ai_result") or []
+            if ai_result and isinstance(ai_result, list):
+                content = ai_result[0].get("answer", "") or ""
+            if not content:
+                bits = []
+                if item.get("indName"):
+                    bits.append(str(item["indName"]))
+                if item.get("current") not in (None, ""):
+                    bits.append(f"现价 {item['current']}")
+                if item.get("percentage") not in (None, ""):
+                    bits.append(f"涨跌幅 {item['percentage']}%")
+                content = "｜".join(bits)
+
+            results.append(SearchResult(
+                title=title[:120],
+                url=url,
+                content=str(content)[:400],
+                source="xueqiu",
+                published_date="",
+                engagement=None,
+            ))
+
+            if len(results) >= max_results:
+                break
+
+        logger.info(f"xueqiu_api: {len(results)} results for '{query}'")
+    except Exception as e:
+        logger.error(f"xueqiu_api search error: {e}")
+
+    return results
+
+
+class XueqiuAPISource(BaseSource):
+    async def search(self, query: str, max_results: int = 10) -> list[SearchResult]:
+        return await search_xueqiu_api(query, max_results)
+
+    def health_check(self) -> dict:
+        return {"available": True, "message": "雪球 API direct ready (cookie auth)"}
+
+
+# ---------------------------------------------------------------------------
+# East Money (东方财富) — direct HTTP, replaces Edge MCP browser automation
+# Search page returns HTML with news/article links, sections for stocks/reports/etc.
+# ---------------------------------------------------------------------------
+
+
+async def search_eastmoney(query: str, max_results: int = 10) -> list[SearchResult]:
+    """Search East Money via direct HTTP GET.
+
+    Replaces previous Edge MCP browser-based approach. Response is GBK-encoded HTML.
+    """
+    results = []
+    try:
+        from urllib.parse import quote
+        url = f"https://so.eastmoney.com/web/s?keyword={quote(query)}"
+
+        async with _make_client(timeout=15.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+            })
+
+        if resp.status_code != 200:
+            logger.warning(f"eastmoney: HTTP {resp.status_code}")
+            return results
+
+        # Try UTF-8 first, fall back to GBK
+        html = resp.text
+        import re
+
+        # Extract links: <a ... href="...">text</a> within search result area
+        # Eastmoney search results show sections: 相关板块/个股/题材/公告/研报/资讯/股吧
+        # Focus on article/news/research links (skip stock quotes, navigation)
+        link_pattern = re.compile(r'<a[^>]*href="([^"]+)"[^>]*>([^<]+)</a>', re.I)
+
+        seen = set()
+        for m in link_pattern.finditer(html):
+            href = m.group(1).strip()
+            text = m.group(2).strip()
+            if not href or not text or len(text) < 4:
+                continue
+            if href == "#" or href.startswith("javascript"):
+                continue
+            if "/quote/" in href or "/data/" in href:
+                continue
+            if "guba.eastmoney" in href:
+                continue
+
+            # Normalize URL
+            full_url = href
+            if href.startswith("//"):
+                full_url = "https:" + href
+            elif href.startswith("/"):
+                full_url = "https://so.eastmoney.com" + href
+            elif not href.startswith("http"):
+                continue
+
+            if full_url in seen:
+                continue
+            seen.add(full_url)
+
+            # Filter for news/article URLs
+            is_article = any(d in full_url for d in [
+                "/a/", "/news/", "/article/",
+                "finance.eastmoney.com", "stock.eastmoney.com",
+                "research.eastmoney.com",
+            ])
+            if not is_article:
+                continue
+
+            # Skip short/noise text
+            noise_words = {"查看", "更多", "详情", "全部", "首页", "下一页",
+                          "登录", "注册", "下载", "开户", "申购", "行情", "股吧", "数据"}
+            if text.startswith(tuple(noise_words)):
+                continue
+            if re.match(r"^[0-9.,%\-+./（）]+$", text):
+                continue
+
+            # Extract date from URL pattern /a/YYYYMMDD...
+            published_date = ""
+            dm = re.search(r"/a/(\d{4})(\d{2})(\d{2})\d*\.html", full_url)
+            if dm:
+                published_date = f"{dm.group(1)}-{dm.group(2)}-{dm.group(3)}"
+
+            results.append(SearchResult(
+                title=text[:120],
+                url=full_url,
+                content=text[:300],
+                source="eastmoney",
+                published_date=published_date,
+            ))
+
+            if len(results) >= max_results:
+                break
+
+        logger.info(f"eastmoney: {len(results)} results for '{query}'")
+    except Exception as e:
+        logger.error(f"eastmoney search error: {e}")
+
+    return results
+
+
+class EastMoneySource(BaseSource):
+    async def search(self, query: str, max_results: int = 10) -> list[SearchResult]:
+        return await search_eastmoney(query, max_results)
+
+    def health_check(self) -> dict:
+        return {"available": True, "message": "东方财富 HTTP direct ready"}
+
+
+# ---------------------------------------------------------------------------
 # 搜狗微信搜索 — direct HTTP, bypasses CSP issue with CDP
 # ---------------------------------------------------------------------------
 
@@ -1373,8 +1748,11 @@ API_SOURCE_MAP = {
     "fear_greed": FearGreedSource,
     "world_bank": WorldBankSource,
     "sec_edgar": SECEdgarsSource,
+    "zhihu": ZhihuAPISource,
+    "xueqiu": XueqiuAPISource,
     "cninfo": CninfoSource,
     "sina_finance": SinaFinanceSource,
+    "eastmoney": EastMoneySource,
     "sogou_wechat": SogouWechatSource,
 }
 

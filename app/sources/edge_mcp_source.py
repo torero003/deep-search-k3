@@ -37,29 +37,7 @@ def extract_engagement(source_name: str, text: str) -> dict | None:
     """
     eng = {}
 
-    if source_name == "zhihu":
-        m = re.search(r"(\d+\.?\d*[kK]?)\s*赞同", text)
-        if m:
-            eng["upvotes"] = _parse_num(m.group(1))
-        m = re.search(r"(\d+\.?\d*[kK]?)\s*评论", text)
-        if m:
-            eng["comments"] = _parse_num(m.group(1))
-        m = re.search(r"(\d+\.?\d*[kK]?)\s*浏览", text)
-        if m:
-            eng["views"] = _parse_num(m.group(1))
-
-    elif source_name == "xueqiu":
-        m = re.search(r"(\d+\.?\d*[kK]?)\s*赞", text)
-        if m:
-            eng["likes"] = _parse_num(m.group(1))
-        m = re.search(r"(\d+\.?\d*[kK]?)\s*评论", text)
-        if m:
-            eng["comments"] = _parse_num(m.group(1))
-        m = re.search(r"(\d+\.?\d*[kK]?)\s*转发", text)
-        if m:
-            eng["reposts"] = _parse_num(m.group(1))
-
-    elif source_name == "twitter":
+    if source_name == "twitter":
         m = re.search(r"(\d+\.?\d*[kK]?)\s*Likes?", text, re.I)
         if m:
             eng["likes"] = _parse_num(m.group(1))
@@ -169,9 +147,8 @@ SEARCH_TEMPLATES = {
     "bing":        "https://www.bing.com/search?q={query}&setlang=zh-CN",
     "yandex":      "https://yandex.com/search/?text={query}&lr=134",
     "github":      "https://github.com/search?q={query}&type=code",
-    "zhihu":       "https://www.zhihu.com/search?type=content&q={query}",
-    "xueqiu":      "https://xueqiu.com/k?q={query}",
     "twitter":     "https://x.com/search?q={query}&f=live",
+    "xueqiu":      "https://xueqiu.com/k?q={query}",
     "trendforce":  "https://www.trendforce.com/tech/search?q={query}",
     "v2ex":        "https://www.sov2ex.com/?q={query}",
     "stats_gov":   "https://www.stats.gov.cn/search/s?siteCode=bm36000002&tab=&qt={query}",
@@ -189,16 +166,6 @@ BROKEN_SOURCES = {"yandex", "stats_gov", "trendforce"}  # yandex: CAPTCHA, stats
 # Login checks for sources that require authentication
 # Uses text indicators (visible text on page) instead of CSS selectors
 LOGIN_CHECKS = {
-    "zhihu": {
-        "url": "https://www.zhihu.com",
-        "logged_in_text": ["创作中心", "私信", "发想法"],
-        "logged_out_text": ["登录", "注册"],
-    },
-    "xueqiu": {
-        "url": "https://xueqiu.com",
-        "logged_in_text": ["我的资产", "自选", "创作者中心"],
-        "logged_out_text": ["登录", "注册"],
-    },
     "twitter": {
         "url": "https://x.com",
         "logged_in_text": ["Home", "Explore", "Profile"],
@@ -212,7 +179,7 @@ LOGIN_CHECKS = {
 }
 
 
-SOURCES_USE_SEARCH_URL = {"google", "bing", "yandex", "github", "zhihu", "xueqiu", "twitter", "v2ex", "stats_gov", "trendforce", "youtube", "bilibili"}
+SOURCES_USE_SEARCH_URL = {"google", "bing", "yandex", "github", "twitter", "xueqiu", "v2ex", "stats_gov", "trendforce", "youtube", "bilibili"}
 
 
 class EdgeMCPSource(BaseSource):

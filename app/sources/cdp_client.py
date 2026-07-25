@@ -106,9 +106,9 @@ def _handler_done_callback(task):
 # Sources that should use their own site tab (not neutral tabs)
 # Sources requiring actual user login (tabs are NEVER closed after search)
 LOGIN_SITES = {
+    "twitter": "x.com",
     "zhihu": "zhihu.com",
     "xueqiu": "xueqiu.com",
-    "twitter": "x.com",
 }
 
 # Sources needing dedicated tabs for isolation (tabs ARE closed after search)
@@ -127,9 +127,9 @@ _ALL_ISOLATED_SITES = {**LOGIN_SITES, **DEDICATED_SITES}
 
 # Homepage to open when no existing tab found for a login site
 SITE_HOME_URLS = {
+    "twitter": "https://x.com",
     "zhihu": "https://www.zhihu.com",
     "xueqiu": "https://xueqiu.com",
-    "twitter": "https://x.com",
     "google": "https://www.google.com",
     "bing": "https://www.bing.com",
     "github": "https://github.com",
@@ -140,6 +140,7 @@ SITE_HOME_URLS = {
 
 # Sources that are SPAs requiring longer render wait times
 SPA_WAIT_TIMES = {
+    "xueqiu": 8.0,  # Xueqiu search is SPA with dynamic content loading
     "v2ex": 10.0,   # sov2ex.com is a SPA, needs JS rendering
     "youtube": 8.0, # YouTube search is heavy JS SPA
     "bilibili": 8.0,# Bilibili search is SPA with login wall
@@ -147,8 +148,6 @@ SPA_WAIT_TIMES = {
 
 # Login URLs for each source (from sources.yml)
 LOGIN_URLS = {
-    "zhihu": "https://www.zhihu.com/login",
-    "xueqiu": "https://xueqiu.com/login",
     "twitter": "https://x.com/login",
 }
 
@@ -554,7 +553,7 @@ async def search_url(url: str, wait: float = 3.0, source_name: str = None,
     """Navigate to a search engine URL and extract structured results.
     Returns list of {title, url, snippet} dicts.
     Uses engine-specific extraction strategies.
-    If source_name is a login-required source (zhihu/xueqiu/twitter),
+    If source_name is a login-required source (twitter),
     connects to the already-logged-in tab for that site.
     If cdp is provided, uses it directly (for parallel search).
     """
@@ -584,10 +583,6 @@ async def search_url(url: str, wait: float = 3.0, source_name: str = None,
         js = _js_github_extract()
     elif "trendforce.com" in page_url:
         js = _js_trendforce_extract()
-    elif "xueqiu.com" in page_url:
-        js = _js_xueqiu_extract()
-    elif "zhihu.com" in page_url:
-        js = _js_zhihu_extract()
     elif "eastmoney.com" in page_url or "so.eastmoney.com" in page_url:
         js = _js_eastmoney_extract()
     elif "v2ex.com" in page_url or "sov2ex.com" in page_url:
@@ -618,10 +613,6 @@ async def search_url(url: str, wait: float = 3.0, source_name: str = None,
 
     logger.info(f"search_url: source={source_name} extracted {len(results)} results")
 
-    # Post-process: clean titles for community sites
-    if "xueqiu.com" in page_url:
-        # New DOM extractor returns clean "author: content" format — no extra cleanup needed
-        pass
 
     # 归一化 JS 提取的原始日期为契约字段 published_date，原始 date 一并保留
     from app.sources.edge_mcp_source import _normalize_cdp_date
@@ -1014,200 +1005,6 @@ def _js_generic_extract() -> str:
     })()"""
 
 
-def _js_xueqiu_extract() -> str:
-    """Extract Xueqiu (xueqiu.com) search results via DOM selectors.
-
-    Only runs on search pages (URL contains /k?). Each result is
-    article.timeline__item with author, post URL, and content.
-    """
-    return """(function() {
-        // Verify we're on a search page
-        if (window.location.href.indexOf('/k?') === -1 && window.location.href.indexOf('/search') === -1) {
-            return JSON.stringify([]);
-        }
-
-        var results = [];
-        var seen = {};
-
-        // 1) Extract discussion posts from article.timeline__item
-        var articles = document.querySelectorAll('article.timeline__item');
-        for (var i = 0; i < articles.length && results.length < 15; i++) {
-            var art = articles[i];
-
-            // Author: a.user-name
-            var authorA = art.querySelector('a.user-name');
-            var author = authorA ? (authorA.textContent || '').trim() : '';
-
-            // Post URL: a.date-and-source (href like /2931099276/391718028)
-            var dateA = art.querySelector('a.date-and-source');
-            var href = dateA ? (dateA.getAttribute('href') || '') : '';
-            if (href && href.indexOf('http') === 0) {
-                // keep as-is
-            } else if (href && href.indexOf('/') === 0) {
-                href = 'https://xueqiu.com' + href;
-            } else if (href && href.indexOf('//') === 0) {
-                href = 'https:' + href;
-            }
-            if (!href || seen[href]) continue;
-
-            // Skip if URL looks like a non-post link (write page, settings, etc)
-            if (href.indexOf('/write') !== -1 || href.indexOf('/settings') !== -1 ||
-                href.indexOf('/mp/') !== -1 || href.indexOf('position=') !== -1) continue;
-
-            seen[href] = true;
-
-            // Content: div.content.content--description or div.timeline__item__content
-            var contentDiv = art.querySelector('div.content.content--description') ||
-                             art.querySelector('div.timeline__item__content');
-            var body = contentDiv ? (contentDiv.textContent || '').trim() : '';
-            if (!body || body.length < 5) continue;
-
-            // 发布日期（best-effort）：a.date-and-source 文本形如 "07-18 10:23 · 来自..."，抓不到置空
-            var dateText = '';
-            try {
-                if (dateA) {
-                    dateText = (dateA.textContent || '').trim();
-                    var dotIdx = dateText.indexOf('·');
-                    if (dotIdx !== -1) dateText = dateText.substring(0, dotIdx).trim();
-                }
-            } catch (e) { dateText = ''; }
-
-            // Title: first 80 chars of body, author as prefix
-            var title = (author ? author + ': ' : '') + body.substring(0, 80);
-            var snippet = body.substring(0, 400);
-
-            results.push({title: title.substring(0, 120), url: href, snippet: snippet, date: dateText});
-        }
-
-        // 2) Extract stock results from links with /S/CODE
-        var anchors = document.querySelectorAll('a[href]');
-        for (var j = 0; j < anchors.length && results.length < 20; j++) {
-            var h = anchors[j].getAttribute('href') || '';
-            if (!h.match(/^\/S\/[A-Z0-9]+$/)) continue;
-            var stockUrl = 'https://xueqiu.com' + h;
-            if (seen[stockUrl]) continue;
-            seen[stockUrl] = true;
-            var stockName = (anchors[j].textContent || '').trim();
-            if (!stockName || stockName.length < 2) continue;
-
-            var snippet = '';
-            var row = anchors[j].closest('tr, div');
-            if (row) snippet = (row.textContent || '').trim().substring(0, 200);
-
-            results.push({title: stockName, url: stockUrl, snippet: snippet, date: ''});
-        }
-
-        return JSON.stringify(results);
-    })()"""
-
-
-
-
-def _js_zhihu_extract() -> str:
-    """Extract Zhihu (zhihu.com) search results via DOM selectors.
-
-    Only runs on search pages (URL contains /search). Each result card has
-    class 'ContentItem' with a link to zhuanlan.zhihu.com or /question/.
-    """
-    return """(function() {
-        // Verify we're on a search page
-        if (window.location.href.indexOf('/search') === -1) {
-            return JSON.stringify([]);
-        }
-
-        var results = [];
-        var seen = {};
-        var cards = document.querySelectorAll('.ContentItem');
-
-        // Navigation URLs to skip
-        var skipPatterns = ['ring-feeds', '/columns', '/people', '/topic/',
-            '创作中心', '热榜', '推荐', '关注', '圈子', '专栏', '故事',
-            '付费咨询', '电子书', '话题', '视频', 'AI 搜索', '论文', '直答',
-            '帮助中心', 'settings', 'notification'];
-
-        for (var i = 0; i < cards.length && results.length < 15; i++) {
-            var card = cards[i];
-            var links = card.querySelectorAll('a[href]');
-            var titleLink = null;
-
-            for (var j = 0; j < links.length; j++) {
-                var h = links[j].getAttribute('href') || '';
-                if (h.indexOf('zhuanlan.zhihu.com') !== -1 ||
-                    h.match(/^\/(?:question|answer|article|p)\//)) {
-                    // Skip navigation links
-                    var skip = false;
-                    for (var k = 0; k < skipPatterns.length; k++) {
-                        if (h.indexOf(skipPatterns[k]) !== -1) { skip = true; break; }
-                    }
-                    if (!skip) {
-                        titleLink = links[j];
-                        break;
-                    }
-                }
-            }
-            if (!titleLink) continue;
-
-            var href = titleLink.getAttribute('href');
-            var fullUrl = href;
-            if (href.indexOf('http') === 0) {
-                fullUrl = href;
-            } else if (href.indexOf('//') === 0) {
-                fullUrl = 'https:' + href;
-            } else {
-                fullUrl = 'https://www.zhihu.com' + href;
-            }
-            if (seen[fullUrl]) continue;
-
-            var title = (titleLink.textContent || '').trim().replace(/\s+/g, ' ');
-            if (title.length < 5 || title.length > 120) continue;
-
-            // Skip if title looks like navigation text
-            var titleSkip = true;
-            for (var m = 0; m < skipPatterns.length; m++) {
-                if (title.indexOf(skipPatterns[m]) !== -1) { titleSkip = false; break; }
-            }
-            // Actually: skip IF any pattern matches
-            var titleSkip = false;
-            for (var m = 0; m < skipPatterns.length; m++) {
-                if (title.indexOf(skipPatterns[m]) !== -1) { titleSkip = true; break; }
-            }
-            if (titleSkip) continue;
-
-            // Snippet: card text minus title
-            var cardText = (card.innerText || '').trim().replace(/\s+/g, ' ');
-            var snippet = '';
-            var idx = cardText.indexOf(title);
-            if (idx !== -1) {
-                snippet = cardText.substring(idx + title.length).trim();
-            }
-            if (snippet.indexOf('阅读全文') !== -1) {
-                snippet = snippet.substring(0, snippet.indexOf('阅读全文')).trim();
-            }
-            snippet = snippet.replace(/赞同\s*\d+/g, '').replace(/评论/g, '').replace(/添加评论/g, '').trim();
-
-            // 发布日期（best-effort）：卡片 data-tooltip 或文本里的完整日期，抓不到置空
-            var dateText = '';
-            try {
-                var dm = null;
-                var tmEl = card.querySelector('[data-tooltip]');
-                if (tmEl) dm = (tmEl.getAttribute('data-tooltip') || '').match(/\d{4}-\d{2}-\d{2}/);
-                if (!dm) dm = cardText.match(/\d{4}-\d{2}-\d{2}/);
-                if (dm) dateText = dm[0];
-            } catch (e) { dateText = ''; }
-
-            seen[fullUrl] = true;
-            results.push({
-                title: title.substring(0, 120),
-                url: fullUrl.substring(0, 200),
-                snippet: snippet.substring(0, 400),
-                date: dateText
-            });
-        }
-        return JSON.stringify(results);
-    })()"""
-
-
-
 
 def _js_eastmoney_extract() -> str:
     """Extract Eastmoney (eastmoney.com) search results.
@@ -1565,7 +1362,7 @@ async def cleanup_unused_tabs():
     """Close all non-essential tabs after search completes.
 
     Keeps:
-    - Login site tabs (zhihu, xueqiu, twitter) — needed for auth
+    - Login site tabs (twitter) — needed for auth
     - 1 neutral tab — to prevent Edge from closing
 
     Closes everything else (dedicated sites, random pages, about:blank).

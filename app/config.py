@@ -93,7 +93,7 @@ INTENT_MAP = {
                       "ETF", "基金", "增仓", "减仓", "资金", "行情", "A股", "板块", "行业",
                       "电网", "设备", "特高压", "光伏", "储能", "锂电", "新能源", "半导体",
                       "聪明资金", "机构", "北向", "南向", "融资", "融券", "换手"],
-        "sources": ["trendforce", "xueqiu", "eastmoney", "google", "bing", "sina_finance", "cninfo", "sogou_wechat"],
+        "sources": ["trendforce", "xueqiu", "eastmoney", "zhihu", "google", "bing", "sina_finance", "cninfo", "sogou_wechat"],
     },
     "ai": {
         "keywords": ["AI", "大模型", "LLM", "agent", "transformer", "机器学习", "深度学习", "GPT", "Claude",

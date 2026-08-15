@@ -1,6 +1,6 @@
 """LLM Relevance Judge — scores search results 0-100 for query relevance.
 
-Ported from last30days rerank.py. Uses local LLM (Qwen 3.6 27B) for scoring.
+Ported from last30days rerank.py. Uses local LLM (vLLM 服务，模型名见 llm_client.MODEL) for scoring.
 Fallback: deterministic scoring when LLM fails.
 Engagement scoring for community sources (zhihu, xueqiu, twitter, etc.).
 """

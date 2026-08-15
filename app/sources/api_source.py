@@ -11,6 +11,7 @@ import logging
 import math
 import os
 import re
+import sys
 import time
 from datetime import datetime, timezone
 from urllib.parse import quote, urlencode
@@ -1548,7 +1549,7 @@ class SogouWechatSource(BaseSource):
 # YouTube — yt-dlp search (structured JSON, no browser needed)
 # ---------------------------------------------------------------------------
 
-_YT_DLP_PYTHON = os.getenv("YT_DLP_PYTHON", "D:/tools/anaconda/python.exe")
+_YT_DLP_PYTHON = os.getenv("YT_DLP_PYTHON", sys.executable)
 
 
 async def search_youtube(query: str, max_results: int = 10) -> list[SearchResult]:

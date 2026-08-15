@@ -10,6 +10,9 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = os.path.join(DATA_DIR, "search_platform.db")
 
+# 历史结果保留天数，超期的记录在 init_db() 时自动清除
+RETENTION_DAYS = 30
+
 
 def get_connection() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
@@ -39,6 +42,27 @@ def init_db():
         logger.warning(f"init_db: index creation skipped (may already exist): {e}")
     except Exception as e:
         logger.warning(f"init_db: unexpected error during dedup: {e}")
+    # Retention: purge rows older than RETENTION_DAYS, rebuild FTS, reclaim space
+    try:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_search_fetched ON search_results(fetched_at)"
+        )
+        deleted = conn.execute(
+            "DELETE FROM search_results WHERE fetched_at < datetime('now', ?)",
+            (f"-{RETENTION_DAYS} days",),
+        ).rowcount
+        if deleted:
+            # FTS is external-content without a delete trigger; rebuild from main table
+            conn.execute(
+                "INSERT INTO search_results_fts(search_results_fts) VALUES('rebuild')"
+            )
+            logger.info(f"init_db: purged {deleted} rows older than {RETENTION_DAYS} days, rebuilt FTS")
+        conn.commit()
+        if deleted:
+            conn.execute("VACUUM")  # must run outside a transaction
+            logger.info("init_db: VACUUM done")
+    except Exception as e:
+        logger.warning(f"init_db: retention cleanup failed: {e}")
     conn.commit()
     conn.close()
 

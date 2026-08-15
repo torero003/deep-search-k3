@@ -4,14 +4,16 @@ import logging
 import math
 import os
 import re
+import sys
 import tempfile
 from datetime import datetime, timezone
 from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# Path to Python that has yt-dlp installed
-_YT_DLP_PYTHON = os.getenv('YT_DLP_PYTHON', 'D:/tools/anaconda/python.exe')
+# Python executable that has yt-dlp installed (defaults to current interpreter;
+# override with YT_DLP_PYTHON if yt-dlp lives in a different env)
+_YT_DLP_PYTHON = os.getenv('YT_DLP_PYTHON', sys.executable)
 
 
 # ---------------------------------------------------------------------------

@@ -147,16 +147,28 @@ def _extract_english_keywords(query: str) -> str:
 _SANITIZE_TEXT = lambda t: t.encode('utf-8', 'ignore').decode('utf-8', errors='ignore') if isinstance(t, str) else t
 
 
-async def _search_one_parallel_limited(source_name: str, query: str, community_kw: str | None, semaphore: asyncio.Semaphore):
+# Global source semaphore: batch mode injects one shared semaphore so that
+# N concurrent queries don't each spawn 6 tabs (N*6 tabs would stall Chromium).
+# None = per-call default (Semaphore(6) inside search()).
+_SOURCE_SEMAPHORE: asyncio.Semaphore | None = None
+
+
+def set_source_semaphore(sem: asyncio.Semaphore | None):
+    """Inject a process-wide source semaphore (used by CLI batch mode)."""
+    global _SOURCE_SEMAPHORE
+    _SOURCE_SEMAPHORE = sem
+
+
+async def _search_one_parallel_limited(source_name: str, query: str, community_kw: str | None, semaphore: asyncio.Semaphore, timeout: float = 30.0):
     """Semaphore-wrapped version of _search_one_parallel to limit concurrent CDP connections."""
     async with semaphore:
         try:
             return await asyncio.wait_for(
                 _search_one_parallel(source_name, query, community_kw),
-                timeout=30.0,
+                timeout=timeout,
             )
         except asyncio.TimeoutError:
-            logger.warning(f"{source_name}: timed out after 30s in parallel search")
+            logger.warning(f"{source_name}: timed out after {timeout}s in parallel search")
             return (source_name, [], False)
 
 
@@ -338,6 +350,11 @@ class SearchRequest(BaseModel):
     raw: bool = True
     freshness: Optional[str] = None
     language: str = "zh"
+    # ── 加速开关（2026-08 新增，默认全关 = 日常单搜行为不变）──
+    no_retry: bool = False       # 跳过 thin-source 二轮补搜（省 ~20-30s）
+    no_entity: bool = False      # 跳过 --all 模式的实体二次搜索（省 ~15-25s）
+    no_transcript: bool = False  # 跳过视频字幕提取（省 ~30s，仅视频源相关）
+    source_timeout: float = 30.0 # 单源超时秒数；批量场景可调低（挂掉的源不再拖整批）
 
 
 class SearchResponse(BaseModel):
@@ -466,11 +483,12 @@ async def search(req: SearchRequest):
     # Concurrency limit: max 6 sources simultaneously per search command.
     # Each source creates a CDP connection + browser tab. Without limit,
     # 12+ sources × multiple concurrent search commands = 300+ tabs → Chromium stalls.
-    _source_semaphore = asyncio.Semaphore(6)
+    # Batch mode injects a process-wide semaphore via set_source_semaphore().
+    _source_semaphore = _SOURCE_SEMAPHORE or asyncio.Semaphore(6)
     tasks = []
     for source_name in valid_sources:
         tasks.append(asyncio.create_task(
-            _search_one_parallel_limited(source_name, search_query, community_kw, _source_semaphore)))
+            _search_one_parallel_limited(source_name, search_query, community_kw, _source_semaphore, timeout=req.source_timeout)))
 
     raw_results = await asyncio.gather(*tasks, return_exceptions=True)
     _t("parallel_search_done")
@@ -500,17 +518,18 @@ async def search(req: SearchRequest):
             await update_source_health(sname, False)
 
     # ── Thin source retry ──
-    extra = await _retry_thin_sources(
-        results_by_source, sources_failed, valid_sources, req.query, community_kw)
-    _t("thin_retry_done")
-    for sname, new_results in extra.items():
-        results_by_source.setdefault(sname, []).extend(new_results)
-        all_results.extend(new_results)
-        sources_used.add(sname)
+    if not req.no_retry:
+        extra = await _retry_thin_sources(
+            results_by_source, sources_failed, valid_sources, req.query, community_kw)
+        _t("thin_retry_done")
+        for sname, new_results in extra.items():
+            results_by_source.setdefault(sname, []).extend(new_results)
+            all_results.extend(new_results)
+            sources_used.add(sname)
 
     # ── Entity-based Phase 2 search (all_sources mode only) ──
     # Reduced from 3 to 1 entity search to save CDP time (each = 15-45s)
-    if req.all_sources and len(all_results) > 5:
+    if req.all_sources and not req.no_entity and len(all_results) > 5:
         entities = _extract_entities_from_results(all_results)
         if entities:
             logger.info(f"[entity-search] entities: {entities}")
@@ -535,23 +554,24 @@ async def search(req: SearchRequest):
         await save_search_result(req.query, r.source, r.url, r.title, r.content, r.score, category)
 
     # ── Video transcript enrichment (after all searches complete) ──
-    for video_source in ('youtube', 'bilibili'):
-        video_results = results_by_source.get(video_source, [])
-        if video_results:
-            try:
-                from app.sources.video_transcript import enrich_results_with_transcripts
-                logger.info(f"Starting transcript enrichment for {video_source}: {len(video_results)} results")
-                dicts = [r.to_dict() for r in video_results]
-                await enrich_results_with_transcripts(dicts, video_source, max_videos=3)
-                # Update content with enriched snippets
-                enriched = 0
-                for r, d in zip(video_results, dicts):
-                    if d.get('content') and d['content'] != r.content:
-                        r.content = d['content']
-                        enriched += 1
-                logger.info(f"Transcript enrichment for {video_source}: {enriched} results updated")
-            except Exception as e:
-                logger.warning(f"transcript enrichment for {video_source}: {e}")
+    if not req.no_transcript:
+        for video_source in ('youtube', 'bilibili'):
+            video_results = results_by_source.get(video_source, [])
+            if video_results:
+                try:
+                    from app.sources.video_transcript import enrich_results_with_transcripts
+                    logger.info(f"Starting transcript enrichment for {video_source}: {len(video_results)} results")
+                    dicts = [r.to_dict() for r in video_results]
+                    await enrich_results_with_transcripts(dicts, video_source, max_videos=3)
+                    # Update content with enriched snippets
+                    enriched = 0
+                    for r, d in zip(video_results, dicts):
+                        if d.get('content') and d['content'] != r.content:
+                            r.content = d['content']
+                            enriched += 1
+                    logger.info(f"Transcript enrichment for {video_source}: {enriched} results updated")
+                except Exception as e:
+                    logger.warning(f"transcript enrichment for {video_source}: {e}")
     _t("transcript_done")
 
     # Process results with full data for cross-validation

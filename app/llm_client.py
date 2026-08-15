@@ -1,6 +1,7 @@
 """LLM client helper — handles UD model reasoning_content + content."""
 import asyncio
 import logging
+import os
 import requests
 import re
 import json as _json
@@ -8,7 +9,9 @@ import json as _json
 from app.config import LLM_URL
 
 logger = logging.getLogger(__name__)
-MODEL = "Qwen3.6-27B-UD-Q6_K_XL.gguf"
+# vLLM served model name — 换本地模型时改这里或用环境变量 LLM_MODEL 覆盖
+# （用 curl $LLM_URL/v1/models 查当前服务名）。2026-08 起本地为 DeepSeek v4 Flash。
+MODEL = os.environ.get("LLM_MODEL", "Qwen3.6-27B-UD-Q6_K_XL.gguf")
 DEFAULT_TIMEOUT = 600  # UD model needs time for reasoning + answer
 
 
